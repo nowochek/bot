@@ -55,7 +55,7 @@ COUNTRIES = {
     "латвия": ["🇱🇻", "Латвия"], "latvia": ["🇱🇻", "Латвия"],
     "литва": ["🇱🇹", "Литва"], "lithuania": ["🇱🇹", "Литва"],
     "европа": ["🇪🇺", "Европа"], "europe": ["🇪🇺", "Европа"],
-    "сша": ["🇺🇸", "США"], "америка": ["🇺🇸", "США"], "usa": ["🇺🇸", "США"], "united states": ["🇺🇸", "США"],
+    "сша": ["🇺🇸", "США"], "usa": ["🇺🇸", "США"], "united states": ["🇺🇸", "США"],
     "канада": ["🇨🇦", "Канада"], "canada": ["🇨🇦", "Канада"],
     "мексика": ["🇲🇽", "Мексика"], "mexico": ["🇲🇽", "Мексика"],
     "бразилия": ["🇧🇷", "Бразилия"], "brazil": ["🇧🇷", "Бразилия"],
@@ -63,145 +63,132 @@ COUNTRIES = {
     "австралия": ["🇦🇺", "Австралия"], "australia": ["🇦🇺", "Австралия"],
 }
 
-FLAG_TO_COUNTRY = {}
-for key, (flag, name) in COUNTRIES.items():
-    if flag not in FLAG_TO_COUNTRY:
-        FLAG_TO_COUNTRY[flag] = name
+# Обратный словарь: флаг -> страна
+FLAG_TO_NAME = {}
+for flag, name in [(f, n) for (_, (f, n)) in COUNTRIES.items()]:
+    if flag not in FLAG_TO_NAME:
+        FLAG_TO_NAME[flag] = name
 
-def extract_flag_from_text(text: str) -> str | None:
-    flag_pattern = r"[\U0001F1E6-\U0001F1FF]{2}"
-    match = re.search(flag_pattern, text)
-    return match.group(0) if match else None
-
-def extract_country_name_from_text(text: str) -> str | None:
-    words = re.findall(r'[a-zA-Zа-яА-ЯёЁ\-]+', text)
+def process_single_link(link: str, index: int) -> str:
+    """Обрабатывает одну VLESS-ссылку"""
+    if not link.startswith("vless://"):
+        return link
+    
+    # Если нет аннотации
+    if "#" not in link:
+        return f"{link}#🏳️ На проверке | {index} сервер"
+    
+    # Разделяем ссылку
+    base, encoded_ann = link.split("#", 1)
+    
+    # Декодируем аннотацию
+    try:
+        ann = unquote(encoded_ann)
+    except:
+        ann = encoded_ann
+    
+    # Ищем флаг в аннотации
+    flag_match = re.search(r"[\U0001F1E6-\U0001F1FF]{2}", ann)
+    flag = flag_match.group(0) if flag_match else None
+    
+    # Ищем название страны в аннотации
+    country_name = None
+    words = re.findall(r'[a-zA-Zа-яА-ЯёЁ\-]+', ann)
     for word in words:
         word_lower = word.lower()
-        for key in COUNTRIES.keys():
+        for key in COUNTRIES:
             if word_lower == key.lower():
-                return COUNTRIES[key][1]
-    return None
-
-def determine_country(annotation: str) -> tuple[str, str]:
-    flag = extract_flag_from_text(annotation)
-    name = extract_country_name_from_text(annotation)
-    
-    if flag and name:
-        expected_flag = None
-        for key, (f, n) in COUNTRIES.items():
-            if n == name:
-                expected_flag = f
+                country_name = COUNTRIES[key][1]
                 break
-        if expected_flag and flag != expected_flag:
-            return expected_flag, name
-        return flag, name
+        if country_name:
+            break
     
-    if flag and flag in FLAG_TO_COUNTRY:
-        return flag, FLAG_TO_COUNTRY[flag]
-    
-    if name:
+    # Определяем итоговый флаг и название
+    if country_name:
+        # Нашли название — берём правильный флаг для этой страны
         for key, (f, n) in COUNTRIES.items():
-            if n == name:
-                return f, n
+            if n == country_name:
+                flag = f
+                break
+    elif flag and flag in FLAG_TO_NAME:
+        # Нет названия, но есть флаг
+        country_name = FLAG_TO_NAME[flag]
+    else:
+        # Ничего не нашли
+        flag = "🏳️"
+        country_name = "На проверке"
     
-    return "🏳️", "На проверке"
-
-def format_vless_link(vless_url: str, server_number: int) -> str:
-    if not vless_url.startswith("vless://"):
-        return vless_url
+    # Собираем новую аннотацию
+    new_ann = f"{flag} {country_name} | {index} сервер"
+    encoded_new_ann = quote(new_ann, safe='')
     
-    if "#" not in vless_url:
-        new_annotation = f"🏳️ На проверке | {server_number} сервер"
-        return f"{vless_url}#{quote(new_annotation, safe='')}"
-    
-    base_part, old_annotation_encoded = vless_url.split("#", 1)
-    
-    try:
-        old_annotation = unquote(old_annotation_encoded)
-    except:
-        old_annotation = old_annotation_encoded
-    
-    flag, country_name = determine_country(old_annotation)
-    new_annotation = f"{flag} {country_name} | {server_number} сервер"
-    new_annotation_encoded = quote(new_annotation, safe='')
-    
-    return f"{base_part}#{new_annotation_encoded}"
-
-def process_vless_links(text: str) -> tuple[str, int]:
-    vless_pattern = r"vless://[^\s]+"
-    links = re.findall(vless_pattern, text)
-    
-    if not links:
-        return text, 0
-    
-    result_lines = []
-    for idx, link in enumerate(links, 1):
-        new_link = format_vless_link(link, idx)
-        result_lines.append(new_link)
-    
-    return '\n'.join(result_lines), len(links)
+    return f"{base}#{encoded_new_ann}"
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
     await message.answer(
         "🌍 *Бот для форматирования VLESS-ссылок*\n\n"
-        "📤 Отправь мне файл .txt с VLESS-ссылками\n"
-        "📎 Бот обработает ссылки и вернёт результат\n\n"
-        "✅ *Формат:*\n"
-        "`vless://...#Russia` → `🇷🇺 Россия | 1 сервер`\n\n"
-        "💡 *Результат:*\n"
-        "• Если ссылок мало — пришлю текстом\n"
-        "• Если много — отправлю файлом .txt",
+        "📤 Отправь мне файл .txt с VLESS-ссылками (по одной на строку)\n"
+        "📎 Бот обработает все ссылки и вернёт **один файл** с результатом\n\n"
+        "✅ Поддерживаются флаги и названия стран на русском/английском\n"
+        "✅ Если страна не найдена — ставит 🏳️ На проверке\n\n"
+        "💡 Просто отправь файл и получи результат!",
         parse_mode="Markdown"
     )
 
 @dp.message()
-async def handle_vless_links(message: types.Message):
-    # Получаем текст
-    if message.document:
-        file_info = await bot.get_file(message.document.file_id)
-        downloaded_file = await bot.download_file(file_info.file_path)
-        try:
-            text = downloaded_file.read().decode('utf-8')
-            await message.answer(f"📄 Получен файл: {message.document.file_name}\n🔄 Обрабатываю...")
-        except Exception:
-            await message.answer("❌ Не удалось прочитать файл. Убедись, что это текстовый файл (.txt) с кодировкой UTF-8.")
-            return
-    else:
-        text = message.text
-    
-    if not text:
-        await message.answer("❌ Отправь текст или файл с VLESS-ссылками.")
+async def handle_file(message: types.Message):
+    # Получаем файл
+    if not message.document:
+        await message.answer("❌ Отправь файл .txt с VLESS-ссылками")
         return
     
-    if "vless://" not in text:
-        await message.answer("❌ Не найдено VLESS-ссылок.", parse_mode="Markdown")
+    # Скачиваем файл
+    file_info = await bot.get_file(message.document.file_id)
+    downloaded = await bot.download_file(file_info.file_path)
+    
+    try:
+        text = downloaded.read().decode('utf-8')
+    except Exception as e:
+        await message.answer(f"❌ Ошибка чтения файла: {e}")
         return
     
-    # Обрабатываем все ссылки
-    result, count = process_vless_links(text)
+    # Разбиваем на строки и обрабатываем
+    lines = text.strip().split('\n')
+    result_lines = []
+    index = 1
     
-    if result == text.replace('\n', '').replace('\r', ''):
-        await message.answer("⚠️ Ссылки обнаружены, но не удалось их обработать. Проверь формат.")
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        if "vless://" in line:
+            # Извлекаем VLESS-ссылку из строки
+            match = re.search(r"vless://[^\s]+", line)
+            if match:
+                vless = match.group(0)
+                processed = process_single_link(vless, index)
+                result_lines.append(processed)
+                index += 1
+            else:
+                result_lines.append(line)
+        else:
+            result_lines.append(line)
+    
+    if not result_lines:
+        await message.answer("❌ Не найдено VLESS-ссылок в файле")
         return
     
-    # Решаем: отправлять текстом или файлом
-    MAX_MESSAGE_LENGTH = 4000
+    # Формируем результат
+    result_text = '\n'.join(result_lines)
+    count = index - 1
     
-    if len(result) <= MAX_MESSAGE_LENGTH:
-        # Мало ссылок — отправляем текстом
-        await message.answer(
-            f"✅ *Готово!* (обработано {count} ссылок)\n\n"
-            f"```\n{result}\n```",
-            parse_mode="Markdown"
-        )
-    else:
-        # Много ссылок — отправляем файлом
-        result_bytes = result.encode('utf-8')
-        await message.answer_document(
-            types.BufferedInputFile(result_bytes, filename="formatted_links.txt"),
-            caption=f"✅ Обработано ссылок: {count}\n📎 Результат в файле (сообщение слишком длинное)"
-        )
+    # Отправляем результат
+    result_bytes = result_text.encode('utf-8')
+    await message.answer_document(
+        types.BufferedInputFile(result_bytes, filename="formatted_links.txt"),
+        caption=f"✅ Обработано ссылок: {count}\n📎 Все ссылки в одном файле"
+    )
 
 async def main():
     print("🚀 Бот для форматирования VLESS-ссылок запущен!")
