@@ -12,7 +12,7 @@ if not TOKEN:
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# ==================== СТРАНЫ С ФЛАГАМИ И ПЕРЕВОДОМ ====================
+# ==================== СТРАНЫ: ключ -> [флаг, русское_название] ====================
 COUNTRIES = {
     # Азия
     "россия": ["🇷🇺", "Россия"], "russia": ["🇷🇺", "Россия"],
@@ -74,71 +74,85 @@ COUNTRIES = {
     "австралия": ["🇦🇺", "Австралия"], "australia": ["🇦🇺", "Австралия"],
 }
 
-def normalize_country_name(text: str) -> str:
-    """
-    Приводит название страны к нижнему регистру для поиска
-    """
-    return text.lower().strip()
+# Обратный словарь: флаг -> русское название
+FLAG_TO_COUNTRY = {}
+for key, (flag, name) in COUNTRIES.items():
+    if flag not in FLAG_TO_COUNTRY:
+        FLAG_TO_COUNTRY[flag] = name
 
-def extract_country_from_annotation(annotation: str) -> tuple[str, bool, str]:
-    """
-    Извлекает название страны из аннотации.
-    Работает с любым регистром: Россия, РОССИЯ, Russia, RUSSIA
-    Возвращает (русское_название, найдена_ли_страна, флаг)
-    """
-    try:
-        decoded = unquote(annotation)
-    except:
-        decoded = annotation
-    
-    # Удаляем эмодзи флагов (в том числе битые)
+def extract_flag_from_text(text: str) -> str | None:
+    """Извлекает флаг (эмодзи страны) из текста"""
     flag_pattern = r"[\U0001F1E6-\U0001F1FF]{2}"
-    cleaned = re.sub(flag_pattern, "", decoded)
-    
-    # Удаляем номера серверов (| 1 сервер, | 10 сервер и т.д.)
-    cleaned = re.sub(r"\|\s*\d+\s*сервер", "", cleaned)
-    cleaned = re.sub(r"\|\s*\d+\s*server", "", cleaned, flags=re.IGNORECASE)
-    
-    # Удаляем лишние символы
-    cleaned = re.sub(r'[^\w\s\-]', ' ', cleaned)
-    
-    # Разбиваем на слова
-    words = re.findall(r'[a-zA-Zа-яА-ЯёЁ\-]+', cleaned)
-    
-    # Ищем страну в словаре (сравниваем в нижнем регистре)
+    match = re.search(flag_pattern, text)
+    return match.group(0) if match else None
+
+def extract_country_name_from_text(text: str) -> str | None:
+    """Извлекает название страны из текста (рус/англ, любой регистр)"""
+    words = re.findall(r'[a-zA-Zа-яА-ЯёЁ\-]+', text)
     for word in words:
         word_lower = word.lower()
-        for key, (flag, russian_name) in COUNTRIES.items():
+        for key in COUNTRIES.keys():
             if word_lower == key.lower():
-                return russian_name, True, flag
+                return COUNTRIES[key][1]  # возвращаем русское название
+    return None
+
+def determine_country(annotation: str) -> tuple[str, str]:
+    """
+    Определяет страну по аннотации.
+    Возвращает (флаг, русское_название)
+    """
+    flag = extract_flag_from_text(annotation)
+    name = extract_country_name_from_text(annotation)
     
-    # Проверяем вхождение подстрок (для названий из двух слов)
-    cleaned_lower = cleaned.lower()
-    for key, (flag, russian_name) in COUNTRIES.items():
-        if key.lower() in cleaned_lower:
-            return russian_name, True, flag
+    # Если есть и флаг, и название — проверяем соответствие
+    if flag and name:
+        # Проверяем, соответствует ли флаг названию
+        expected_flag = None
+        for key, (f, n) in COUNTRIES.items():
+            if n == name:
+                expected_flag = f
+                break
+        if expected_flag and flag != expected_flag:
+            # Флаг не соответствует названию — исправляем
+            return expected_flag, name
+        return flag, name
     
-    return None, False, None
+    # Если есть только флаг — определяем по флагу
+    if flag and flag in FLAG_TO_COUNTRY:
+        return flag, FLAG_TO_COUNTRY[flag]
+    
+    # Если есть только название — определяем по названию
+    if name:
+        for key, (f, n) in COUNTRIES.items():
+            if n == name:
+                return f, n
+    
+    # Если ничего нет
+    return "🏳️", "На проверке"
 
 def format_vless_link(vless_url: str, server_number: int) -> str:
-    """Форматирует VLESS-ссылку: добавляет флаг, русское название и номер сервера"""
+    """Форматирует VLESS-ссылку: добавляет флаг, название и номер сервера"""
     if not vless_url.startswith("vless://"):
         return vless_url
     
     if "#" not in vless_url:
-        new_annotation = f"🔍 На проверке | {server_number} сервер"
+        new_annotation = f"🏳️ На проверке | {server_number} сервер"
         return f"{vless_url}#{quote(new_annotation, safe='')}"
     
     base_part, old_annotation_encoded = vless_url.split("#", 1)
     
-    country_name, found, flag = extract_country_from_annotation(old_annotation_encoded)
+    try:
+        old_annotation = unquote(old_annotation_encoded)
+    except:
+        old_annotation = old_annotation_encoded
     
-    if found and country_name:
-        new_annotation = f"{flag} {country_name} | {server_number} сервер"
-    else:
-        new_annotation = f"🔍 На проверке | {server_number} сервер"
+    # Определяем страну
+    flag, country_name = determine_country(old_annotation)
     
+    # Формируем новую аннотацию
+    new_annotation = f"{flag} {country_name} | {server_number} сервер"
     new_annotation_encoded = quote(new_annotation, safe='')
+    
     return f"{base_part}#{new_annotation_encoded}"
 
 def process_vless_links(text: str) -> tuple[str, int]:
@@ -161,13 +175,15 @@ async def start(message: types.Message):
     await message.answer(
         "🌍 *Бот для форматирования VLESS-ссылок*\n\n"
         "📤 *Как работает:*\n"
-        "1. Отправь мне одну или несколько VLESS-ссылок\n"
-        "2. Бот определит страну (Россия, Россия, RUSSIA, Russia — любой вариант)\n"
-        "3. Переведёт в правильное русское название\n"
-        "4. Добавит флаг страны и номер сервера\n\n"
-        "✅ *Пример:*\n"
-        "`vless://...#Russia` → `vless://...#🇷🇺 Россия | 1 сервер`\n"
-        "`vless://...#RUSSIA` → `vless://...#🇷🇺 Россия | 1 сервер`\n\n"
+        "• Определяет страну по флагу или названию\n"
+        "• Если есть флаг и название — проверяет соответствие\n"
+        "• Если есть только флаг — определяет страну\n"
+        "• Если есть только название — добавляет флаг\n"
+        "• Если нет ничего — ставит 🏳️ На проверке\n\n"
+        "✅ *Примеры:*\n"
+        "`vless://...#Russia` → `🇷🇺 Россия | 1 сервер`\n"
+        "`vless://...#🇩🇪` → `🇩🇪 Германия | 1 сервер`\n"
+        "`vless://...#🇫🇷 France` → `🇫🇷 Франция | 1 сервер`\n\n"
         "📎 Можно отправлять несколько ссылок сразу, файл `.txt` или просто текст.",
         parse_mode="Markdown"
     )
